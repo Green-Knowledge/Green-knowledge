@@ -1,10 +1,7 @@
-# redeploy trigger
-print("App is starting...")
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pymongo import MongoClient
 from datetime import datetime, timedelta
-from bson import ObjectId
 import bcrypt
 import os
 from dotenv import load_dotenv
@@ -14,41 +11,49 @@ from email.mime.text import MIMEText
 
 from google.oauth2 import id_token
 from google.auth.transport import requests
+
 # ======================================================
 # LOAD ENV VARIABLES
 # ======================================================
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, supports_credentials=True)
 
 # ======================================================
-# REQUIRED ENV VARIABLES CHECK
+# ENV VARIABLES
 # ======================================================
-MONGO_URI = "mongodb+srv://jobportal_user:Appaamma1148%40@cluster0.uebeciq.mongodb.net/?appName=Cluster0"
-JWT_SECRET = "supersecretkey"
-GOOGLE_CLIENT_ID = "1001078719894-nkhelmb8iaf6ha5u7tnkrafprnvamblp.apps.googleusercontent.com"
-ADMIN_EMAIL = "Gokul@greenowledge.onMicrosoft.com"
-EMAIL_PASSWORD = "Appaamma1148@"
+MONGO_URI = os.getenv("MONGO_URI")
+JWT_SECRET = os.getenv("JWT_SECRET")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 
 if not MONGO_URI:
-    raise Exception("❌ MONGO_URI not set in environment variables")
+    raise Exception("❌ MONGO_URI not set")
 
 if not JWT_SECRET:
-    raise Exception("❌ JWT_SECRET not set in environment variables")
+    raise Exception("❌ JWT_SECRET not set")
 
 JWT_EXP_DAYS = 7
 
 # ======================================================
-# DATABASE CONNECTION
+# DATABASE CONNECTION (with timeout protection)
 # ======================================================
-client = MongoClient(MONGO_URI)
+client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 db = client["jobportal"]
 users = db["users"]
 applications = db["applications"]
 
 # ======================================================
-# HELPER: SERIALIZE MONGO DOCUMENT
+# HEALTH CHECK (REQUIRED FOR RAILWAY)
+# ======================================================
+@app.route("/")
+def health():
+    return "API Running", 200
+
+# ======================================================
+# HELPER: SERIALIZE USER
 # ======================================================
 def serialize_user(user):
     return {
@@ -62,7 +67,7 @@ def serialize_user(user):
     }
 
 # ======================================================
-# HELPER: CREATE JWT TOKEN
+# HELPER: CREATE JWT
 # ======================================================
 def create_token(user):
     payload = {
@@ -73,7 +78,7 @@ def create_token(user):
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 # ======================================================
-# REGISTER (LOCAL)
+# REGISTER
 # ======================================================
 @app.route("/api/register", methods=["POST"])
 def register():
@@ -100,7 +105,7 @@ def register():
     return jsonify({"success": True})
 
 # ======================================================
-# LOGIN (LOCAL)
+# LOGIN
 # ======================================================
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -199,7 +204,7 @@ def get_me():
         return jsonify({"success": False}), 401
 
 # ======================================================
-# APPLY JOB + SEND EMAIL
+# APPLY JOB + EMAIL
 # ======================================================
 @app.route("/api/job/apply", methods=["POST"])
 def apply_job():
@@ -217,7 +222,7 @@ def apply_job():
 
     applications.insert_one(application)
 
-    # SEND EMAIL
+    # SEND EMAIL SAFELY
     if ADMIN_EMAIL and EMAIL_PASSWORD:
         try:
             msg = MIMEText(f"""
@@ -237,7 +242,7 @@ Message:
             msg["From"] = ADMIN_EMAIL
             msg["To"] = ADMIN_EMAIL
 
-            server = smtplib.SMTP("smtp.gmail.com", 587)
+            server = smtplib.SMTP("smtp.gmail.com", 587, timeout=10)
             server.starttls()
             server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
             server.send_message(msg)
@@ -247,12 +252,3 @@ Message:
             print("Email error:", e)
 
     return jsonify({"success": True})
-
-
-# ======================================================
-# IMPORTANT FOR RENDER
-# ======================================================
-# DO NOT USE debug=True IN PRODUCTION
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
