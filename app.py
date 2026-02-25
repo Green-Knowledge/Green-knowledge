@@ -6,68 +6,32 @@ import bcrypt
 import os
 from dotenv import load_dotenv
 import jwt
-import smtplib
-from email.mime.text import MIMEText
 
 from google.oauth2 import id_token
 from google.auth.transport import requests
 
-# ======================================================
-# LOAD ENV VARIABLES
-# ======================================================
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True)
+CORS(app)
 
-# ======================================================
-# ENV VARIABLES
-# ======================================================
-MONGO_URI = os.getenv("MONGO_URI")
-JWT_SECRET = os.getenv("JWT_SECRET")
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-
-if not MONGO_URI:
-    raise Exception("❌ MONGO_URI not set")
-
-if not JWT_SECRET:
-    raise Exception("❌ JWT_SECRET not set")
-
+# ---------- CONFIG ----------
+JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey")
 JWT_EXP_DAYS = 7
 
-# ======================================================
-# DATABASE CONNECTION (with timeout protection)
-# ======================================================
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+# ---------- DATABASE ----------
+client = MongoClient(os.getenv("MONGO_URI"))
 db = client["jobportal"]
 users = db["users"]
 applications = db["applications"]
 
-# ======================================================
-# HEALTH CHECK (REQUIRED FOR RAILWAY)
-# ======================================================
-@app.route("/")
-def health():
-    return "API Running", 200
+# ---------- GOOGLE ----------
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 
 # ======================================================
-# HELPER: SERIALIZE USER
-# ======================================================
-def serialize_user(user):
-    return {
-        "id": str(user["_id"]),
-        "name": user.get("name"),
-        "email": user.get("email"),
-        "gender": user.get("gender"),
-        "age": user.get("age"),
-        "provider": user.get("provider"),
-        "picture": user.get("picture"),
-    }
-
-# ======================================================
-# HELPER: CREATE JWT
+# HELPER: CREATE TOKEN
 # ======================================================
 def create_token(user):
     payload = {
@@ -78,14 +42,11 @@ def create_token(user):
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 # ======================================================
-# REGISTER
+# REGISTER (NORMAL)
 # ======================================================
 @app.route("/api/register", methods=["POST"])
 def register():
     data = request.json
-
-    if not data:
-        return jsonify({"success": False, "error": "No data provided"}), 400
 
     if users.find_one({"email": data.get("email")}):
         return jsonify({"success": False, "error": "User already exists"}), 400
@@ -93,10 +54,10 @@ def register():
     hashed_pw = bcrypt.hashpw(data["password"].encode(), bcrypt.gensalt())
 
     users.insert_one({
-        "name": data.get("name"),
-        "gender": data.get("gender"),
-        "age": data.get("age"),
-        "email": data.get("email"),
+        "name": data["name"],
+        "gender": data["gender"],
+        "age": data["age"],
+        "email": data["email"],
         "password": hashed_pw,
         "provider": "local",
         "createdAt": datetime.utcnow()
@@ -105,15 +66,11 @@ def register():
     return jsonify({"success": True})
 
 # ======================================================
-# LOGIN
+# LOGIN (NORMAL)
 # ======================================================
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.json
-
-    if not data:
-        return jsonify({"success": False}), 400
-
     user = users.find_one({"email": data.get("email"), "provider": "local"})
 
     if not user:
@@ -127,11 +84,17 @@ def login():
     return jsonify({
         "success": True,
         "token": token,
-        "user": serialize_user(user)
+        "user": {
+            "name": user["name"],
+            "email": user["email"],
+            "gender": user.get("gender"),
+            "age": user.get("age"),
+            "provider": user["provider"]
+        }
     })
 
 # ======================================================
-# GOOGLE LOGIN
+# GOOGLE LOGIN / REGISTER
 # ======================================================
 @app.route("/api/auth/google", methods=["POST"])
 def google_auth():
@@ -148,7 +111,7 @@ def google_auth():
         user = users.find_one({"email": email})
 
         if not user:
-            new_user = {
+            user = {
                 "name": idinfo.get("name"),
                 "email": email,
                 "gender": data.get("gender"),
@@ -157,23 +120,29 @@ def google_auth():
                 "provider": "google",
                 "createdAt": datetime.utcnow()
             }
-            users.insert_one(new_user)
-            user = users.find_one({"email": email})
+            users.insert_one(user)
 
         token = create_token(user)
 
         return jsonify({
             "success": True,
             "token": token,
-            "user": serialize_user(user)
+            "user": {
+                "name": user.get("name"),
+                "email": user.get("email"),
+                "gender": user.get("gender"),
+                "age": user.get("age"),
+                "provider": user.get("provider"),
+                "picture": user.get("picture")
+            }
         })
 
     except Exception as e:
-        print("Google Auth Error:", e)
+        print(e)
         return jsonify({"success": False}), 401
 
 # ======================================================
-# VERIFY TOKEN
+# VERIFY USER (AUTO LOGIN AFTER REFRESH)
 # ======================================================
 @app.route("/api/me", methods=["GET"])
 def get_me():
@@ -182,30 +151,21 @@ def get_me():
     if not token:
         return jsonify({"success": False}), 401
 
-    if token.startswith("Bearer "):
-        token = token.split(" ")[1]
-
     try:
         decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        user = users.find_one({"email": decoded["email"]})
+        user = users.find_one({"email": decoded["email"]}, {"password": 0})
 
         if not user:
             return jsonify({"success": False}), 401
 
-        return jsonify({
-            "success": True,
-            "user": serialize_user(user)
-        })
+        return jsonify({"success": True, "user": user})
 
     except jwt.ExpiredSignatureError:
         return jsonify({"success": False, "error": "Token expired"}), 401
-    except Exception as e:
-        print("JWT Error:", e)
+    except:
         return jsonify({"success": False}), 401
 
-# ======================================================
-# APPLY JOB + EMAIL
-# ======================================================
+
 @app.route("/api/job/apply", methods=["POST"])
 def apply_job():
     data = request.json
@@ -222,11 +182,12 @@ def apply_job():
 
     applications.insert_one(application)
 
-    # SEND EMAIL SAFELY
-    if ADMIN_EMAIL and EMAIL_PASSWORD:
-        try:
-            msg = MIMEText(f"""
-New Job Application
+    # ---------- SEND EMAIL ----------
+    from email.mime.text import MIMEText
+    import smtplib
+
+    msg = MIMEText(f"""
+New Job Application Received
 
 Name: {application['name']}
 Email: {application['email']}
@@ -238,17 +199,22 @@ Message:
 {application['message']}
 """)
 
-            msg["Subject"] = f"New Application - {application['job']}"
-            msg["From"] = ADMIN_EMAIL
-            msg["To"] = ADMIN_EMAIL
+    msg["Subject"] = f"New Job Application - {application['job']}"
+    msg["From"] = ADMIN_EMAIL
+    msg["To"] = ADMIN_EMAIL
 
-            server = smtplib.SMTP("smtp.gmail.com", 587, timeout=10)
-            server.starttls()
-            server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
-            server.send_message(msg)
-            server.quit()
-
-        except Exception as e:
-            print("Email error:", e)
+    try:
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+    except Exception as e:
+        print("Email error:", e)
 
     return jsonify({"success": True})
+
+
+# ======================================================
+if __name__ == "__main__":
+    app.run(debug=True)
