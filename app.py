@@ -29,7 +29,11 @@ JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey")
 JWT_EXP_DAYS = 7
 
 # ---------- DATABASE ----------
-client = MongoClient(os.getenv("MONGO_URI"))
+mongo_uri = os.getenv("MONGO_URI")
+if not mongo_uri:
+    raise Exception("MONGO_URI not set! Check environment variables.")
+
+client = MongoClient(mongo_uri)
 db = client["jobportal"]
 users = db["users"]
 applications = db["applications"]
