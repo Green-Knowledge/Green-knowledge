@@ -11,12 +11,18 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 
 load_dotenv()
-
 app = Flask(__name__)
 CORS(app, origins=[
     "http://localhost:3000",
     "https://greenknowledgeglobal.com"
-])
+], supports_credentials=True)
+
+# ✅ COOP/COEP headers
+@app.after_request
+def add_security_headers(response):
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
+    response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
+    return response
 
 # ---------- CONFIG ----------
 JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey")
