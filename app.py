@@ -59,24 +59,39 @@ def create_token(user):
 # ======================================================
 @app.route("/api/register", methods=["POST"])
 def register():
-    data = request.json
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
 
-    if users.find_one({"email": data.get("email")}):
-        return jsonify({"success": False, "error": "User already exists"}), 400
+        email = data.get("email")
+        if not email:
+            return jsonify({"success": False, "error": "Email required"}), 400
 
-    hashed_pw = bcrypt.hashpw(data["password"].encode(), bcrypt.gensalt())
+        if users.find_one({"email": email}):
+            return jsonify({"success": False, "error": "User already exists"}), 400
 
-    users.insert_one({
-        "name": data["name"],
-        "gender": data["gender"],
-        "age": data["age"],
-        "email": data["email"],
-        "password": hashed_pw,
-        "provider": "local",
-        "createdAt": datetime.utcnow()
-    })
+        password = data.get("password")
+        if not password:
+            return jsonify({"success": False, "error": "Password required"}), 400
 
-    return jsonify({"success": True})
+        hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+
+        users.insert_one({
+            "name": data.get("name", ""),
+            "gender": data.get("gender", ""),
+            "age": data.get("age", 0),
+            "email": email,
+            "password": hashed_pw,
+            "provider": "local",
+            "createdAt": datetime.utcnow()
+        })
+
+        return jsonify({"success": True})
+
+    except Exception as e:
+        print("Register Error:", e)  # Backend logs me dikhega
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # ======================================================
 # LOGIN (NORMAL)
