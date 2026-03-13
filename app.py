@@ -6,6 +6,7 @@ import bcrypt
 import os
 from dotenv import load_dotenv
 import jwt
+import threading
 
 from google.oauth2 import id_token
 from google.auth.transport import requests
@@ -61,7 +62,7 @@ applications = db["applications"]
 
 
 # ======================================================
-# EMAIL FUNCTION (REUSABLE)
+# EMAIL FUNCTION
 # ======================================================
 def send_admin_email(subject, message):
 
@@ -77,15 +78,31 @@ def send_admin_email(subject, message):
 
     try:
 
-        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=10)
         server.starttls()
+
         server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
+
         server.send_message(msg)
+
         server.quit()
+
+        print("Email sent successfully")
 
     except Exception as e:
 
         print("Email error:", e)
+
+
+# ======================================================
+# SEND EMAIL IN BACKGROUND
+# ======================================================
+def send_email_async(subject, message):
+
+    threading.Thread(
+        target=send_admin_email,
+        args=(subject, message)
+    ).start()
 
 
 # ======================================================
@@ -119,7 +136,7 @@ def create_token(user):
 
 
 # ======================================================
-# REGISTER (NORMAL)
+# REGISTER
 # ======================================================
 @app.route("/api/register", methods=["POST"])
 def register():
@@ -160,8 +177,8 @@ def register():
 
         users.insert_one(user_data)
 
-        # 🔔 SEND EMAIL NOTIFICATION
-        send_admin_email(
+        # EMAIL NOTIFICATION
+        send_email_async(
             "New User Registration - Green Knowledge",
             f"""
 New User Registered
@@ -188,7 +205,7 @@ Time: {user_data['createdAt']}
 
 
 # ======================================================
-# LOGIN (NORMAL)
+# LOGIN
 # ======================================================
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -233,7 +250,7 @@ def login():
 
 
 # ======================================================
-# GOOGLE LOGIN / REGISTER
+# GOOGLE LOGIN
 # ======================================================
 @app.route("/api/auth/google", methods=["POST"])
 def google_auth():
@@ -268,8 +285,7 @@ def google_auth():
 
             users.insert_one(user)
 
-            # 🔔 EMAIL FOR GOOGLE SIGNUP
-            send_admin_email(
+            send_email_async(
                 "New Google User Registration",
                 f"""
 New Google User Registered
@@ -374,7 +390,7 @@ def apply_job():
 
     applications.insert_one(application)
 
-    send_admin_email(
+    send_email_async(
 
         f"New Job Application - {application['job']}",
 
