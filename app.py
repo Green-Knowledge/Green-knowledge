@@ -11,60 +11,95 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 
 load_dotenv()
+
 app = Flask(__name__)
+
 CORS(app, origins=[
     "http://localhost:3000",
     "https://greenknowledgeglobal.com"
 ], supports_credentials=True)
 
-# ✅ COOP/COEP headers
+# ======================================================
+# SECURITY HEADERS
+# ======================================================
 @app.after_request
 def add_security_headers(response):
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
     response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
     return response
 
-# ---------- CONFIG ----------
+
+# ======================================================
+# CONFIG
+# ======================================================
 JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey")
 JWT_EXP_DAYS = 7
 
-# ---------- DATABASE ----------
+
+# ======================================================
+# DATABASE
+# ======================================================
 mongo_uri = os.getenv("MONGO_URI")
 if not mongo_uri:
-    raise Exception("MONGO_URI not set! Check environment variables.")
+    raise Exception("MONGO_URI not set!")
 
 client = MongoClient(mongo_uri)
 db = client["jobportal"]
+
 users = db["users"]
 applications = db["applications"]
 
-# ---------- GOOGLE ----------
+
+# ======================================================
+# GOOGLE CONFIG
+# ======================================================
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 
+
 # ======================================================
-# HELPER: CREATE TOKEN
+# HELPER : GET USER ROLE
+# ======================================================
+def get_user_role(email):
+    if email.lower().endswith("@greenknowledgeglobal.com"):
+        return "employee"
+    return "user"
+
+
+# ======================================================
+# HELPER : CREATE TOKEN
 # ======================================================
 def create_token(user):
+
+    role = get_user_role(user["email"])
+
     payload = {
         "email": user["email"],
         "provider": user["provider"],
+        "role": role,
         "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)
     }
+
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
 
 # ======================================================
 # REGISTER (NORMAL)
 # ======================================================
 @app.route("/api/register", methods=["POST"])
 def register():
+
     try:
+
         data = request.json
+
         if not data:
             return jsonify({"success": False, "error": "No data provided"}), 400
 
         email = data.get("email")
+
         if not email:
             return jsonify({"success": False, "error": "Email required"}), 400
 
@@ -72,6 +107,7 @@ def register():
             return jsonify({"success": False, "error": "User already exists"}), 400
 
         password = data.get("password")
+
         if not password:
             return jsonify({"success": False, "error": "Password required"}), 400
 
@@ -90,45 +126,71 @@ def register():
         return jsonify({"success": True})
 
     except Exception as e:
-        print("Register Error:", e)  # Backend logs me dikhega
-        return jsonify({"success": False, "error": str(e)}), 500
+
+        print("Register Error:", e)
+
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 
 # ======================================================
 # LOGIN (NORMAL)
 # ======================================================
 @app.route("/api/login", methods=["POST"])
 def login():
+
     data = request.json
-    user = users.find_one({"email": data.get("email"), "provider": "local"})
+
+    user = users.find_one({
+        "email": data.get("email"),
+        "provider": "local"
+    })
 
     if not user:
-        return jsonify({"success": False, "error": "User not found"}), 404
+        return jsonify({
+            "success": False,
+            "error": "User not found"
+        }), 404
 
     if not bcrypt.checkpw(data["password"].encode(), user["password"]):
-        return jsonify({"success": False, "error": "Invalid password"}), 401
+        return jsonify({
+            "success": False,
+            "error": "Invalid password"
+        }), 401
 
     token = create_token(user)
 
+    role = get_user_role(user["email"])
+
     return jsonify({
+
         "success": True,
+
         "token": token,
+
         "user": {
             "name": user["name"],
             "email": user["email"],
             "gender": user.get("gender"),
             "age": user.get("age"),
-            "provider": user["provider"]
+            "provider": user["provider"],
+            "role": role
         }
     })
+
 
 # ======================================================
 # GOOGLE LOGIN / REGISTER
 # ======================================================
 @app.route("/api/auth/google", methods=["POST"])
 def google_auth():
+
     data = request.json
 
     try:
+
         idinfo = id_token.verify_oauth2_token(
             data.get("token"),
             requests.Request(),
@@ -136,10 +198,13 @@ def google_auth():
         )
 
         email = idinfo["email"]
+
         user = users.find_one({"email": email})
 
         if not user:
+
             user = {
+
                 "name": idinfo.get("name"),
                 "email": email,
                 "gender": data.get("gender"),
@@ -147,58 +212,91 @@ def google_auth():
                 "picture": idinfo.get("picture"),
                 "provider": "google",
                 "createdAt": datetime.utcnow()
+
             }
+
             users.insert_one(user)
 
         token = create_token(user)
 
+        role = get_user_role(user["email"])
+
         return jsonify({
+
             "success": True,
+
             "token": token,
+
             "user": {
                 "name": user.get("name"),
                 "email": user.get("email"),
                 "gender": user.get("gender"),
                 "age": user.get("age"),
                 "provider": user.get("provider"),
-                "picture": user.get("picture")
+                "picture": user.get("picture"),
+                "role": role
             }
+
         })
 
     except Exception as e:
+
         print(e)
+
         return jsonify({"success": False}), 401
+
 
 # ======================================================
 # VERIFY USER (AUTO LOGIN AFTER REFRESH)
 # ======================================================
 @app.route("/api/me", methods=["GET"])
 def get_me():
+
     token = request.headers.get("Authorization")
 
     if not token:
         return jsonify({"success": False}), 401
 
     try:
+
         decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        user = users.find_one({"email": decoded["email"]}, {"password": 0})
+
+        user = users.find_one(
+            {"email": decoded["email"]},
+            {"password": 0}
+        )
 
         if not user:
             return jsonify({"success": False}), 401
 
-        return jsonify({"success": True, "user": user})
+        role = get_user_role(user["email"])
+        user["role"] = role
+
+        return jsonify({
+            "success": True,
+            "user": user
+        })
 
     except jwt.ExpiredSignatureError:
-        return jsonify({"success": False, "error": "Token expired"}), 401
+        return jsonify({
+            "success": False,
+            "error": "Token expired"
+        }), 401
+
     except:
         return jsonify({"success": False}), 401
 
 
+# ======================================================
+# JOB APPLICATION
+# ======================================================
 @app.route("/api/job/apply", methods=["POST"])
 def apply_job():
+
     data = request.json
 
     application = {
+
         "name": data.get("name"),
         "email": data.get("email"),
         "phone": data.get("phone"),
@@ -206,11 +304,11 @@ def apply_job():
         "experience": data.get("experience"),
         "message": data.get("message"),
         "createdAt": datetime.utcnow()
+
     }
 
     applications.insert_one(application)
 
-    # ---------- SEND EMAIL ----------
     from email.mime.text import MIMEText
     import smtplib
 
@@ -232,17 +330,25 @@ Message:
     msg["To"] = ADMIN_EMAIL
 
     try:
+
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
         server.send_message(msg)
         server.quit()
+
     except Exception as e:
+
         print("Email error:", e)
 
     return jsonify({"success": True})
 
+
+# ======================================================
+# RUN SERVER
 # ======================================================
 if __name__ == "__main__":
+
     port = int(os.environ.get("PORT", 5000))
+
     app.run(host="0.0.0.0", port=port)
