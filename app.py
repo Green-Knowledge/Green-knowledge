@@ -10,6 +10,9 @@ import jwt
 from google.oauth2 import id_token
 from google.auth.transport import requests
 
+from email.mime.text import MIMEText
+import smtplib
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -35,15 +38,22 @@ def add_security_headers(response):
 JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey")
 JWT_EXP_DAYS = 7
 
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+
 
 # ======================================================
 # DATABASE
 # ======================================================
 mongo_uri = os.getenv("MONGO_URI")
+
 if not mongo_uri:
     raise Exception("MONGO_URI not set!")
 
 client = MongoClient(mongo_uri)
+
 db = client["jobportal"]
 
 users = db["users"]
@@ -51,20 +61,41 @@ applications = db["applications"]
 
 
 # ======================================================
-# GOOGLE CONFIG
+# EMAIL FUNCTION (REUSABLE)
 # ======================================================
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+def send_admin_email(subject, message):
 
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+    if not ADMIN_EMAIL or not EMAIL_PASSWORD:
+        print("Email credentials missing")
+        return
+
+    msg = MIMEText(message)
+
+    msg["Subject"] = subject
+    msg["From"] = ADMIN_EMAIL
+    msg["To"] = ADMIN_EMAIL
+
+    try:
+
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+
+    except Exception as e:
+
+        print("Email error:", e)
 
 
 # ======================================================
 # HELPER : GET USER ROLE
 # ======================================================
 def get_user_role(email):
+
     if email.lower().endswith("@greenknowledgeglobal.com"):
         return "employee"
+
     return "user"
 
 
@@ -76,10 +107,12 @@ def create_token(user):
     role = get_user_role(user["email"])
 
     payload = {
+
         "email": user["email"],
         "provider": user["provider"],
         "role": role,
         "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)
+
     }
 
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
@@ -113,7 +146,8 @@ def register():
 
         hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
 
-        users.insert_one({
+        user_data = {
+
             "name": data.get("name", ""),
             "gender": data.get("gender", ""),
             "age": data.get("age", 0),
@@ -121,7 +155,25 @@ def register():
             "password": hashed_pw,
             "provider": "local",
             "createdAt": datetime.utcnow()
-        })
+
+        }
+
+        users.insert_one(user_data)
+
+        # 🔔 SEND EMAIL NOTIFICATION
+        send_admin_email(
+            "New User Registration - Green Knowledge",
+            f"""
+New User Registered
+
+Name: {user_data['name']}
+Email: {user_data['email']}
+Gender: {user_data['gender']}
+Age: {user_data['age']}
+
+Time: {user_data['createdAt']}
+"""
+        )
 
         return jsonify({"success": True})
 
@@ -167,7 +219,6 @@ def login():
     return jsonify({
 
         "success": True,
-
         "token": token,
 
         "user": {
@@ -217,6 +268,20 @@ def google_auth():
 
             users.insert_one(user)
 
+            # 🔔 EMAIL FOR GOOGLE SIGNUP
+            send_admin_email(
+                "New Google User Registration",
+                f"""
+New Google User Registered
+
+Name: {user['name']}
+Email: {user['email']}
+Provider: Google
+
+Time: {user['createdAt']}
+"""
+            )
+
         token = create_token(user)
 
         role = get_user_role(user["email"])
@@ -247,7 +312,7 @@ def google_auth():
 
 
 # ======================================================
-# VERIFY USER (AUTO LOGIN AFTER REFRESH)
+# VERIFY USER
 # ======================================================
 @app.route("/api/me", methods=["GET"])
 def get_me():
@@ -309,10 +374,11 @@ def apply_job():
 
     applications.insert_one(application)
 
-    from email.mime.text import MIMEText
-    import smtplib
+    send_admin_email(
 
-    msg = MIMEText(f"""
+        f"New Job Application - {application['job']}",
+
+        f"""
 New Job Application Received
 
 Name: {application['name']}
@@ -323,23 +389,8 @@ Experience: {application['experience']}
 
 Message:
 {application['message']}
-""")
-
-    msg["Subject"] = f"New Job Application - {application['job']}"
-    msg["From"] = ADMIN_EMAIL
-    msg["To"] = ADMIN_EMAIL
-
-    try:
-
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-
-    except Exception as e:
-
-        print("Email error:", e)
+"""
+    )
 
     return jsonify({"success": True})
 
