@@ -6,9 +6,18 @@ import bcrypt
 import os
 from dotenv import load_dotenv
 import jwt
+import smtplib
+import requests
+
+from email.mime.text import MIMEText
+from user_agents import parse
 
 from google.oauth2 import id_token
-from google.auth.transport import requests
+from google.auth.transport import requests as grequests
+
+# ==============================
+# LOAD ENV
+# ==============================
 
 load_dotenv()
 
@@ -19,9 +28,10 @@ CORS(app, origins=[
     "https://greenknowledgeglobal.com"
 ], supports_credentials=True)
 
-# ======================================================
+# ==============================
 # SECURITY HEADERS
-# ======================================================
+# ==============================
+
 @app.after_request
 def add_security_headers(response):
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
@@ -29,65 +39,115 @@ def add_security_headers(response):
     return response
 
 
-# ======================================================
+# ==============================
 # CONFIG
-# ======================================================
-JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey")
+# ==============================
+
+JWT_SECRET = os.getenv("JWT_SECRET")
 JWT_EXP_DAYS = 7
 
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
-# ======================================================
+# ==============================
 # DATABASE
-# ======================================================
+# ==============================
+
 mongo_uri = os.getenv("MONGO_URI")
+
 if not mongo_uri:
-    raise Exception("MONGO_URI not set!")
+    raise Exception("MONGO_URI not set")
 
 client = MongoClient(mongo_uri)
-db = client["jobportal"]
 
+db = client["jobportal"]
 users = db["users"]
 applications = db["applications"]
 
 
-# ======================================================
-# GOOGLE CONFIG
-# ======================================================
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+# ==============================
+# TOKEN
+# ==============================
 
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-
-
-# ======================================================
-# HELPER : GET USER ROLE
-# ======================================================
-def get_user_role(email):
-    if email.lower().endswith("@greenknowledgeglobal.com"):
-        return "employee"
-    return "user"
-
-
-# ======================================================
-# HELPER : CREATE TOKEN
-# ======================================================
 def create_token(user):
-
-    role = get_user_role(user["email"])
 
     payload = {
         "email": user["email"],
         "provider": user["provider"],
-        "role": role,
         "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)
     }
 
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+
+    return token
 
 
-# ======================================================
-# REGISTER (NORMAL)
-# ======================================================
+# ==============================
+# USER TRACKING
+# ==============================
+
+def get_user_details():
+
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+
+    try:
+        response = requests.get(f"http://ip-api.com/json/{ip}").json()
+        country = response.get("country", "Unknown")
+        city = response.get("city", "Unknown")
+    except:
+        country = "Unknown"
+        city = "Unknown"
+
+    ua_string = request.headers.get("User-Agent")
+    user_agent = parse(ua_string)
+
+    device = "Mobile" if user_agent.is_mobile else "Desktop"
+
+    return {
+        "ip": ip,
+        "country": country,
+        "city": city,
+        "device": device,
+        "browser": user_agent.browser.family,
+        "os": user_agent.os.family
+    }
+
+
+# ==============================
+# EMAIL FUNCTION
+# ==============================
+
+def send_email(subject, body):
+
+    try:
+
+        msg = MIMEText(body)
+
+        msg["Subject"] = subject
+        msg["From"] = ADMIN_EMAIL
+        msg["To"] = ADMIN_EMAIL
+
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+
+        server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
+
+        server.send_message(msg)
+
+        server.quit()
+
+    except Exception as e:
+        print("Email error:", e)
+
+
+# ==============================
+# REGISTER
+# ==============================
+
 @app.route("/api/register", methods=["POST"])
 def register():
 
@@ -95,49 +155,64 @@ def register():
 
         data = request.json
 
-        if not data:
-            return jsonify({"success": False, "error": "No data provided"}), 400
-
         email = data.get("email")
-
-        if not email:
-            return jsonify({"success": False, "error": "Email required"}), 400
-
-        if users.find_one({"email": email}):
-            return jsonify({"success": False, "error": "User already exists"}), 400
-
         password = data.get("password")
 
-        if not password:
-            return jsonify({"success": False, "error": "Password required"}), 400
+        if not email or not password:
+            return jsonify({"success": False}), 400
+
+        if users.find_one({"email": email}):
+            return jsonify({"success": False, "error": "User exists"}), 400
 
         hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
 
-        users.insert_one({
-            "name": data.get("name", ""),
-            "gender": data.get("gender", ""),
-            "age": data.get("age", 0),
+        user = {
+            "name": data.get("name"),
+            "gender": data.get("gender"),
+            "age": data.get("age"),
             "email": email,
             "password": hashed_pw,
             "provider": "local",
             "createdAt": datetime.utcnow()
-        })
+        }
+
+        users.insert_one(user)
+
+        details = get_user_details()
+
+        send_email(
+            "New User Registered",
+            f"""
+New user registered
+
+Name: {user['name']}
+Email: {user['email']}
+Gender: {user['gender']}
+Age: {user['age']}
+Provider: {user['provider']}
+
+IP: {details['ip']}
+Country: {details['country']}
+City: {details['city']}
+Device: {details['device']}
+Browser: {details['browser']}
+OS: {details['os']}
+
+Time: {user['createdAt']}
+"""
+        )
 
         return jsonify({"success": True})
 
     except Exception as e:
-
-        print("Register Error:", e)
-
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        print("Register error:", e)
+        return jsonify({"success": False}), 500
 
 
-# ======================================================
-# LOGIN (NORMAL)
-# ======================================================
+# ==============================
+# LOGIN
+# ==============================
+
 @app.route("/api/login", methods=["POST"])
 def login():
 
@@ -149,41 +224,30 @@ def login():
     })
 
     if not user:
-        return jsonify({
-            "success": False,
-            "error": "User not found"
-        }), 404
+        return jsonify({"success": False}), 404
 
     if not bcrypt.checkpw(data["password"].encode(), user["password"]):
-        return jsonify({
-            "success": False,
-            "error": "Invalid password"
-        }), 401
+        return jsonify({"success": False}), 401
 
     token = create_token(user)
 
-    role = get_user_role(user["email"])
-
     return jsonify({
-
         "success": True,
-
         "token": token,
-
         "user": {
             "name": user["name"],
             "email": user["email"],
             "gender": user.get("gender"),
             "age": user.get("age"),
-            "provider": user["provider"],
-            "role": role
+            "provider": user["provider"]
         }
     })
 
 
-# ======================================================
-# GOOGLE LOGIN / REGISTER
-# ======================================================
+# ==============================
+# GOOGLE LOGIN
+# ==============================
+
 @app.route("/api/auth/google", methods=["POST"])
 def google_auth():
 
@@ -193,7 +257,7 @@ def google_auth():
 
         idinfo = id_token.verify_oauth2_token(
             data.get("token"),
-            requests.Request(),
+            grequests.Request(),
             GOOGLE_CLIENT_ID
         )
 
@@ -204,7 +268,6 @@ def google_auth():
         if not user:
 
             user = {
-
                 "name": idinfo.get("name"),
                 "email": email,
                 "gender": data.get("gender"),
@@ -212,44 +275,51 @@ def google_auth():
                 "picture": idinfo.get("picture"),
                 "provider": "google",
                 "createdAt": datetime.utcnow()
-
             }
 
             users.insert_one(user)
 
+            details = get_user_details()
+
+            send_email(
+                "New Google User Registered",
+                f"""
+New Google signup
+
+Name: {user['name']}
+Email: {user['email']}
+Gender: {user['gender']}
+Age: {user['age']}
+
+IP: {details['ip']}
+Country: {details['country']}
+City: {details['city']}
+Device: {details['device']}
+Browser: {details['browser']}
+OS: {details['os']}
+
+Time: {user['createdAt']}
+"""
+            )
+
         token = create_token(user)
 
-        role = get_user_role(user["email"])
-
         return jsonify({
-
             "success": True,
-
             "token": token,
-
-            "user": {
-                "name": user.get("name"),
-                "email": user.get("email"),
-                "gender": user.get("gender"),
-                "age": user.get("age"),
-                "provider": user.get("provider"),
-                "picture": user.get("picture"),
-                "role": role
-            }
-
+            "user": user
         })
 
     except Exception as e:
-
-        print(e)
-
+        print("Google error:", e)
         return jsonify({"success": False}), 401
 
 
-# ======================================================
-# VERIFY USER (AUTO LOGIN AFTER REFRESH)
-# ======================================================
-@app.route("/api/me", methods=["GET"])
+# ==============================
+# VERIFY USER
+# ==============================
+
+@app.route("/api/me")
 def get_me():
 
     token = request.headers.get("Authorization")
@@ -266,37 +336,25 @@ def get_me():
             {"password": 0}
         )
 
-        if not user:
-            return jsonify({"success": False}), 401
-
-        role = get_user_role(user["email"])
-        user["role"] = role
-
         return jsonify({
             "success": True,
             "user": user
         })
 
-    except jwt.ExpiredSignatureError:
-        return jsonify({
-            "success": False,
-            "error": "Token expired"
-        }), 401
-
     except:
         return jsonify({"success": False}), 401
 
 
-# ======================================================
+# ==============================
 # JOB APPLICATION
-# ======================================================
+# ==============================
+
 @app.route("/api/job/apply", methods=["POST"])
 def apply_job():
 
     data = request.json
 
     application = {
-
         "name": data.get("name"),
         "email": data.get("email"),
         "phone": data.get("phone"),
@@ -304,49 +362,34 @@ def apply_job():
         "experience": data.get("experience"),
         "message": data.get("message"),
         "createdAt": datetime.utcnow()
-
     }
 
     applications.insert_one(application)
 
-    from email.mime.text import MIMEText
-    import smtplib
-
-    msg = MIMEText(f"""
-New Job Application Received
+    send_email(
+        "New Job Application",
+        f"""
+New Job Application
 
 Name: {application['name']}
 Email: {application['email']}
 Phone: {application['phone']}
 Job: {application['job']}
+
 Experience: {application['experience']}
 
 Message:
 {application['message']}
-""")
-
-    msg["Subject"] = f"New Job Application - {application['job']}"
-    msg["From"] = ADMIN_EMAIL
-    msg["To"] = ADMIN_EMAIL
-
-    try:
-
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-
-    except Exception as e:
-
-        print("Email error:", e)
+"""
+    )
 
     return jsonify({"success": True})
 
 
-# ======================================================
+# ==============================
 # RUN SERVER
-# ======================================================
+# ==============================
+
 if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 5000))
