@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pymongo import MongoClient
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import bcrypt
 import os
 from dotenv import load_dotenv
@@ -15,7 +15,6 @@ from user_agents import parse
 from google.oauth2 import id_token
 from google.auth.transport import requests as grequests
 
-
 # ==============================
 # LOAD ENV
 # ==============================
@@ -28,7 +27,6 @@ CORS(app, origins=[
     "http://localhost:3000",
     "https://greenknowledgeglobal.com"
 ], supports_credentials=True)
-
 
 # ==============================
 # SECURITY HEADERS
@@ -51,21 +49,17 @@ JWT_EXP_DAYS = 7
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-MONGO_URI = os.getenv("MONGO_URI")
-
-# SAFETY CHECKS
-if not JWT_SECRET:
-    raise Exception("JWT_SECRET not set")
-
-if not MONGO_URI:
-    raise Exception("MONGO_URI not set")
-
 
 # ==============================
 # DATABASE
 # ==============================
 
-client = MongoClient(MONGO_URI)
+mongo_uri = os.getenv("MONGO_URI")
+
+if not mongo_uri:
+    raise Exception("MONGO_URI not set")
+
+client = MongoClient(mongo_uri)
 
 db = client["jobportal"]
 users = db["users"]
@@ -81,10 +75,13 @@ def create_token(user):
     payload = {
         "email": user["email"],
         "provider": user["provider"],
-        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXP_DAYS)
+        "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)
     }
 
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
 
     return token
 
@@ -98,14 +95,14 @@ def get_user_details():
     ip = request.headers.get("X-Forwarded-For", request.remote_addr)
 
     try:
-        response = requests.get(f"http://ip-api.com/json/{ip}", timeout=3).json()
+        response = requests.get(f"http://ip-api.com/json/{ip}").json()
         country = response.get("country", "Unknown")
         city = response.get("city", "Unknown")
     except:
         country = "Unknown"
         city = "Unknown"
 
-    ua_string = request.headers.get("User-Agent", "")
+    ua_string = request.headers.get("User-Agent")
     user_agent = parse(ua_string)
 
     device = "Mobile" if user_agent.is_mobile else "Desktop"
@@ -126,10 +123,6 @@ def get_user_details():
 
 def send_email(subject, body):
 
-    if not ADMIN_EMAIL or not EMAIL_PASSWORD:
-        print("Email config missing")
-        return
-
     try:
 
         msg = MIMEText(body)
@@ -142,6 +135,7 @@ def send_email(subject, body):
         server.starttls()
 
         server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
+
         server.send_message(msg)
 
         server.quit()
@@ -179,7 +173,7 @@ def register():
             "email": email,
             "password": hashed_pw,
             "provider": "local",
-            "createdAt": datetime.now(timezone.utc)
+            "createdAt": datetime.utcnow()
         }
 
         users.insert_one(user)
@@ -224,18 +218,15 @@ def login():
 
     data = request.json
 
-    email = data.get("email")
-    password = data.get("password")
-
     user = users.find_one({
-        "email": email,
+        "email": data.get("email"),
         "provider": "local"
     })
 
     if not user:
         return jsonify({"success": False}), 404
 
-    if not bcrypt.checkpw(password.encode(), user["password"]):
+    if not bcrypt.checkpw(data["password"].encode(), user["password"]):
         return jsonify({"success": False}), 401
 
     token = create_token(user)
@@ -244,11 +235,11 @@ def login():
         "success": True,
         "token": token,
         "user": {
-            "name": user.get("name"),
-            "email": user.get("email"),
+            "name": user["name"],
+            "email": user["email"],
             "gender": user.get("gender"),
             "age": user.get("age"),
-            "provider": user.get("provider")
+            "provider": user["provider"]
         }
     })
 
@@ -283,10 +274,33 @@ def google_auth():
                 "age": data.get("age"),
                 "picture": idinfo.get("picture"),
                 "provider": "google",
-                "createdAt": datetime.now(timezone.utc)
+                "createdAt": datetime.utcnow()
             }
 
             users.insert_one(user)
+
+            details = get_user_details()
+
+            send_email(
+                "New Google User Registered",
+                f"""
+New Google signup
+
+Name: {user['name']}
+Email: {user['email']}
+Gender: {user['gender']}
+Age: {user['age']}
+
+IP: {details['ip']}
+Country: {details['country']}
+City: {details['city']}
+Device: {details['device']}
+Browser: {details['browser']}
+OS: {details['os']}
+
+Time: {user['createdAt']}
+"""
+            )
 
         token = create_token(user)
 
@@ -347,7 +361,7 @@ def apply_job():
         "job": data.get("job"),
         "experience": data.get("experience"),
         "message": data.get("message"),
-        "createdAt": datetime.now(timezone.utc)
+        "createdAt": datetime.utcnow()
     }
 
     applications.insert_one(application)
