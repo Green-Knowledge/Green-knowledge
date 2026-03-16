@@ -1,20 +1,18 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pymongo import MongoClient
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import bcrypt
 import os
 from dotenv import load_dotenv
 import jwt
 import smtplib
 import requests
-
 from email.mime.text import MIMEText
 from user_agents import parse
-
 from google.oauth2 import id_token
 from google.auth.transport import requests as grequests
-
+from bson import ObjectId
 
 # ==============================
 # LOAD ENV
@@ -29,7 +27,6 @@ CORS(app, origins=[
     "https://greenknowledgeglobal.com"
 ], supports_credentials=True)
 
-
 # ==============================
 # SECURITY HEADERS
 # ==============================
@@ -40,25 +37,24 @@ def add_security_headers(response):
     response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
     return response
 
-
 # ==============================
 # CONFIG
 # ==============================
 
-JWT_SECRET = os.getenv("JWT_SECRET")
+JWT_SECRET = os.getenv("JWT_SECRET_KEY")
 JWT_EXP_DAYS = 7
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-MONGO_URI = os.getenv("MONGO_URI")
 
-if not JWT_SECRET:
-    raise Exception("JWT_SECRET not set")
+MONGO_URI = os.getenv("MONGO_URI")
 
 if not MONGO_URI:
     raise Exception("MONGO_URI not set")
 
+if not JWT_SECRET:
+    raise Exception("JWT_SECRET not set")
 
 # ==============================
 # DATABASE
@@ -70,7 +66,6 @@ db = client["jobportal"]
 users = db["users"]
 applications = db["applications"]
 
-
 # ==============================
 # TOKEN
 # ==============================
@@ -80,16 +75,12 @@ def create_token(user):
     payload = {
         "email": user["email"],
         "provider": user["provider"],
-        "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)
+        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXP_DAYS)
     }
 
     token = jwt.encode(payload, str(JWT_SECRET), algorithm="HS256")
 
-    if isinstance(token, bytes):
-        token = token.decode("utf-8")
-
     return token
-
 
 # ==============================
 # USER TRACKING
@@ -100,14 +91,9 @@ def get_user_details():
     ip = request.headers.get("X-Forwarded-For", request.remote_addr)
 
     try:
-        response = requests.get(
-            f"http://ip-api.com/json/{ip}",
-            timeout=3
-        ).json()
-
+        response = requests.get(f"http://ip-api.com/json/{ip}", timeout=3).json()
         country = response.get("country", "Unknown")
         city = response.get("city", "Unknown")
-
     except:
         country = "Unknown"
         city = "Unknown"
@@ -126,7 +112,6 @@ def get_user_details():
         "os": user_agent.os.family
     }
 
-
 # ==============================
 # EMAIL FUNCTION
 # ==============================
@@ -134,7 +119,7 @@ def get_user_details():
 def send_email(subject, body):
 
     if not ADMIN_EMAIL or not EMAIL_PASSWORD:
-        print("Email config missing")
+        print("Email credentials missing")
         return
 
     try:
@@ -155,7 +140,6 @@ def send_email(subject, body):
 
     except Exception as e:
         print("Email error:", e)
-
 
 # ==============================
 # REGISTER
@@ -186,7 +170,7 @@ def register():
             "email": email,
             "password": hashed_pw,
             "provider": "local",
-            "createdAt": datetime.utcnow()
+            "createdAt": datetime.now(timezone.utc)
         }
 
         users.insert_one(user)
@@ -196,22 +180,16 @@ def register():
         send_email(
             "New User Registered",
             f"""
-New user registered
-
 Name: {user['name']}
 Email: {user['email']}
 Gender: {user['gender']}
 Age: {user['age']}
-Provider: {user['provider']}
-
 IP: {details['ip']}
 Country: {details['country']}
 City: {details['city']}
 Device: {details['device']}
 Browser: {details['browser']}
 OS: {details['os']}
-
-Time: {user['createdAt']}
 """
         )
 
@@ -221,7 +199,6 @@ Time: {user['createdAt']}
         print("Register error:", e)
         return jsonify({"success": False}), 500
 
-
 # ==============================
 # LOGIN
 # ==============================
@@ -229,42 +206,35 @@ Time: {user['createdAt']}
 @app.route("/api/login", methods=["POST"])
 def login():
 
-    try:
+    data = request.json
 
-        data = request.json
+    email = data.get("email")
+    password = data.get("password")
 
-        email = data.get("email")
-        password = data.get("password")
+    user = users.find_one({
+        "email": email,
+        "provider": "local"
+    })
 
-        user = users.find_one({
-            "email": email,
-            "provider": "local"
-        })
+    if not user:
+        return jsonify({"success": False}), 404
 
-        if not user:
-            return jsonify({"success": False}), 404
+    if not bcrypt.checkpw(password.encode(), user["password"]):
+        return jsonify({"success": False}), 401
 
-        if not bcrypt.checkpw(password.encode(), user["password"]):
-            return jsonify({"success": False}), 401
+    token = create_token(user)
 
-        token = create_token(user)
-
-        return jsonify({
-            "success": True,
-            "token": token,
-            "user": {
-                "name": user.get("name"),
-                "email": user.get("email"),
-                "gender": user.get("gender"),
-                "age": user.get("age"),
-                "provider": user.get("provider")
-            }
-        })
-
-    except Exception as e:
-        print("Login error:", e)
-        return jsonify({"success": False}), 500
-
+    return jsonify({
+        "success": True,
+        "token": token,
+        "user": {
+            "name": user.get("name"),
+            "email": user.get("email"),
+            "gender": user.get("gender"),
+            "age": user.get("age"),
+            "provider": user.get("provider")
+        }
+    })
 
 # ==============================
 # GOOGLE LOGIN
@@ -292,11 +262,9 @@ def google_auth():
             user = {
                 "name": idinfo.get("name"),
                 "email": email,
-                "gender": data.get("gender"),
-                "age": data.get("age"),
                 "picture": idinfo.get("picture"),
                 "provider": "google",
-                "createdAt": datetime.utcnow()
+                "createdAt": datetime.now(timezone.utc)
             }
 
             users.insert_one(user)
@@ -306,13 +274,16 @@ def google_auth():
         return jsonify({
             "success": True,
             "token": token,
-            "user": user
+            "user": {
+                "name": user.get("name"),
+                "email": user.get("email"),
+                "provider": user.get("provider")
+            }
         })
 
     except Exception as e:
         print("Google error:", e)
         return jsonify({"success": False}), 401
-
 
 # ==============================
 # VERIFY USER
@@ -337,6 +308,9 @@ def get_me():
             {"password": 0}
         )
 
+        if user:
+            user["_id"] = str(user["_id"])
+
         return jsonify({
             "success": True,
             "user": user
@@ -345,7 +319,6 @@ def get_me():
     except Exception as e:
         print("JWT error:", e)
         return jsonify({"success": False}), 401
-
 
 # ==============================
 # JOB APPLICATION
@@ -363,7 +336,7 @@ def apply_job():
         "job": data.get("job"),
         "experience": data.get("experience"),
         "message": data.get("message"),
-        "createdAt": datetime.utcnow()
+        "createdAt": datetime.now(timezone.utc)
     }
 
     applications.insert_one(application)
@@ -371,13 +344,10 @@ def apply_job():
     send_email(
         "New Job Application",
         f"""
-New Job Application
-
 Name: {application['name']}
 Email: {application['email']}
 Phone: {application['phone']}
 Job: {application['job']}
-
 Experience: {application['experience']}
 
 Message:
@@ -386,7 +356,6 @@ Message:
     )
 
     return jsonify({"success": True})
-
 
 # ==============================
 # RUN SERVER
