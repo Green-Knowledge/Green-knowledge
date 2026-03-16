@@ -119,7 +119,7 @@ def get_user_details():
 def send_email(subject, body):
 
     try:
-        print("Starting email send...")
+        print("EMAIL START")
 
         msg = MIMEText(body)
         msg["Subject"] = subject
@@ -127,21 +127,26 @@ def send_email(subject, body):
         msg["To"] = ADMIN_EMAIL
 
         server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
+        server.ehlo()
 
-        print("Logging into Gmail...")
+        server.starttls()
+        server.ehlo()
+
         server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
 
-        print("Sending email...")
-        server.send_message(msg)
+        server.sendmail(
+            ADMIN_EMAIL,
+            ADMIN_EMAIL,
+            msg.as_string()
+        )
+
+        print("EMAIL SENT")
 
         server.quit()
 
-        print("EMAIL SENT SUCCESSFULLY")
-
     except Exception as e:
-        print("EMAIL FAILED:", e)
-
+        print("EMAIL FAILED:", str(e))
+        
 
 @app.route("/test-email")
 def test_email():
