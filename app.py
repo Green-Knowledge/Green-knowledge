@@ -15,6 +15,7 @@ from user_agents import parse
 from google.oauth2 import id_token
 from google.auth.transport import requests as grequests
 
+
 # ==============================
 # LOAD ENV
 # ==============================
@@ -27,6 +28,7 @@ CORS(app, origins=[
     "http://localhost:3000",
     "https://greenknowledgeglobal.com"
 ], supports_credentials=True)
+
 
 # ==============================
 # SECURITY HEADERS
@@ -49,19 +51,22 @@ JWT_EXP_DAYS = 7
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+MONGO_URI = os.getenv("MONGO_URI")
+
+if not JWT_SECRET:
+    raise Exception("JWT_SECRET not set")
+
+if not MONGO_URI:
+    raise Exception("MONGO_URI not set")
+
 
 # ==============================
 # DATABASE
 # ==============================
 
-mongo_uri = os.getenv("MONGO_URI")
-
-if not mongo_uri:
-    raise Exception("MONGO_URI not set")
-
-client = MongoClient(mongo_uri)
-
+client = MongoClient(MONGO_URI)
 db = client["jobportal"]
+
 users = db["users"]
 applications = db["applications"]
 
@@ -78,7 +83,7 @@ def create_token(user):
         "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)
     }
 
-    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    token = jwt.encode(payload, str(JWT_SECRET), algorithm="HS256")
 
     if isinstance(token, bytes):
         token = token.decode("utf-8")
@@ -95,14 +100,19 @@ def get_user_details():
     ip = request.headers.get("X-Forwarded-For", request.remote_addr)
 
     try:
-        response = requests.get(f"http://ip-api.com/json/{ip}").json()
+        response = requests.get(
+            f"http://ip-api.com/json/{ip}",
+            timeout=3
+        ).json()
+
         country = response.get("country", "Unknown")
         city = response.get("city", "Unknown")
+
     except:
         country = "Unknown"
         city = "Unknown"
 
-    ua_string = request.headers.get("User-Agent")
+    ua_string = request.headers.get("User-Agent", "")
     user_agent = parse(ua_string)
 
     device = "Mobile" if user_agent.is_mobile else "Desktop"
@@ -123,6 +133,10 @@ def get_user_details():
 
 def send_email(subject, body):
 
+    if not ADMIN_EMAIL or not EMAIL_PASSWORD:
+        print("Email config missing")
+        return
+
     try:
 
         msg = MIMEText(body)
@@ -135,7 +149,6 @@ def send_email(subject, body):
         server.starttls()
 
         server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
-
         server.send_message(msg)
 
         server.quit()
@@ -216,32 +229,41 @@ Time: {user['createdAt']}
 @app.route("/api/login", methods=["POST"])
 def login():
 
-    data = request.json
+    try:
 
-    user = users.find_one({
-        "email": data.get("email"),
-        "provider": "local"
-    })
+        data = request.json
 
-    if not user:
-        return jsonify({"success": False}), 404
+        email = data.get("email")
+        password = data.get("password")
 
-    if not bcrypt.checkpw(data["password"].encode(), user["password"]):
-        return jsonify({"success": False}), 401
+        user = users.find_one({
+            "email": email,
+            "provider": "local"
+        })
 
-    token = create_token(user)
+        if not user:
+            return jsonify({"success": False}), 404
 
-    return jsonify({
-        "success": True,
-        "token": token,
-        "user": {
-            "name": user["name"],
-            "email": user["email"],
-            "gender": user.get("gender"),
-            "age": user.get("age"),
-            "provider": user["provider"]
-        }
-    })
+        if not bcrypt.checkpw(password.encode(), user["password"]):
+            return jsonify({"success": False}), 401
+
+        token = create_token(user)
+
+        return jsonify({
+            "success": True,
+            "token": token,
+            "user": {
+                "name": user.get("name"),
+                "email": user.get("email"),
+                "gender": user.get("gender"),
+                "age": user.get("age"),
+                "provider": user.get("provider")
+            }
+        })
+
+    except Exception as e:
+        print("Login error:", e)
+        return jsonify({"success": False}), 500
 
 
 # ==============================
@@ -279,29 +301,6 @@ def google_auth():
 
             users.insert_one(user)
 
-            details = get_user_details()
-
-            send_email(
-                "New Google User Registered",
-                f"""
-New Google signup
-
-Name: {user['name']}
-Email: {user['email']}
-Gender: {user['gender']}
-Age: {user['age']}
-
-IP: {details['ip']}
-Country: {details['country']}
-City: {details['city']}
-Device: {details['device']}
-Browser: {details['browser']}
-OS: {details['os']}
-
-Time: {user['createdAt']}
-"""
-            )
-
         token = create_token(user)
 
         return jsonify({
@@ -322,12 +321,14 @@ Time: {user['createdAt']}
 @app.route("/api/me")
 def get_me():
 
-    token = request.headers.get("Authorization")
+    auth = request.headers.get("Authorization")
 
-    if not token:
+    if not auth:
         return jsonify({"success": False}), 401
 
     try:
+
+        token = auth.split(" ")[1]
 
         decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
 
@@ -341,7 +342,8 @@ def get_me():
             "user": user
         })
 
-    except:
+    except Exception as e:
+        print("JWT error:", e)
         return jsonify({"success": False}), 401
 
 
