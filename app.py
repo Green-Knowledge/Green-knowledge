@@ -118,14 +118,10 @@ def get_user_details():
 
 def send_email(subject, body):
 
-    if not ADMIN_EMAIL or not EMAIL_PASSWORD:
-        print("Email credentials missing")
-        return
-
     try:
+        print("Starting email send...")
 
         msg = MIMEText(body)
-
         msg["Subject"] = subject
         msg["From"] = ADMIN_EMAIL
         msg["To"] = ADMIN_EMAIL
@@ -133,14 +129,29 @@ def send_email(subject, body):
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
 
+        print("Logging into Gmail...")
         server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
+
+        print("Sending email...")
         server.send_message(msg)
 
         server.quit()
 
-    except Exception as e:
-        print("Email error:", e)
+        print("EMAIL SENT SUCCESSFULLY")
 
+    except Exception as e:
+        print("EMAIL FAILED:", e)
+
+
+@app.route("/test-email")
+def test_email():
+
+    send_email(
+        "Backend Test Email",
+        "If you see this email, SMTP is working."
+    )
+
+    return "Email sent test"
 # ==============================
 # REGISTER
 # ==============================
