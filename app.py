@@ -44,6 +44,7 @@ def add_security_headers(response):
 JWT_SECRET = os.getenv("JWT_SECRET_KEY")
 JWT_EXP_DAYS = 7
 
+FROM_EMAIL = os.getenv("FROM_EMAIL")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -123,7 +124,7 @@ def send_email(subject, body):
 
         msg = MIMEText(body)
         msg["Subject"] = subject
-        msg["From"] = ADMIN_EMAIL
+        msg["From"] = FROM_EMAIL
         msg["To"] = ADMIN_EMAIL
 
         server = smtplib.SMTP("smtp.gmail.com", 587)
