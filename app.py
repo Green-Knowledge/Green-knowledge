@@ -66,7 +66,7 @@ db = client["jobportal"]
 
 users = db["users"]
 applications = db["applications"]
-
+print("file load")
 # ==============================
 # TOKEN
 # ==============================
@@ -133,10 +133,10 @@ def send_email(subject, body):
         server.starttls()
         server.ehlo()
 
-        server.login(ADMIN_EMAIL, EMAIL_PASSWORD)
+        server.login(FROM_EMAIL, EMAIL_PASSWORD)
 
         server.sendmail(
-            ADMIN_EMAIL,
+            FROM_EMAIL,
             ADMIN_EMAIL,
             msg.as_string()
         )
@@ -149,21 +149,90 @@ def send_email(subject, body):
         print("EMAIL FAILED:", str(e))
         
 
-@app.route("/test-email")
-def test_email():
+    print("🔥 API HIT /test-email")
 
-    send_email(
-        "Backend Test Email",
-        "If you see this email, SMTP is working."
-    )
+    try:
+        data = request.get_json()
 
-    return "Email sent test"
+        subject = data.get("subject")
+        message = data.get("message")
+
+        send_email(subject, message)
+
+        return jsonify({
+            "success": True,
+            "msg": "Email bhej di gayi"
+        })
+
+    except Exception as e:
+        print("❌ ERROR:", str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 # ==============================
 # REGISTER
 # ==============================
 
 @app.route("/api/register", methods=["POST"])
 def register():
+    try:
+        print("🔥 REGISTER API HIT")
+
+        data = request.get_json()
+
+        name = data.get("name")
+        email = data.get("email")
+        password = data.get("password")
+
+        # 🔹 check existing
+        if users.find_one({"email": email}):
+            return jsonify({
+                "success": False,
+                "error": "User already exists"
+            }), 400
+
+        # 🔹 hash password
+        hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+
+        # 🔹 save user
+        users.insert_one({
+            "name": name,
+            "email": email,
+            "password": hashed_password,
+            "provider": "local",
+            "createdAt": datetime.utcnow()
+        })
+
+        print("✅ USER SAVED")
+
+        # 🔥 ADMIN EMAIL SEND
+        subject = "🚀 New User Registered"
+        body = f"""
+New user registered on your platform:
+
+Name: {name}
+Email: {email}
+
+Check admin panel for more details.
+"""
+
+        send_email(subject, body)
+
+        print("📨 EMAIL SENT TO ADMIN")
+
+        return jsonify({
+            "success": True,
+            "message": "User registered successfully"
+        })
+
+    except Exception as e:
+        print("❌ REGISTER ERROR:", str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
     try:
 
